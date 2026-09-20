@@ -1,70 +1,75 @@
-name: Build InstallerX with Custom Package Name
+name: Build with custom package name
 
 on:
+  # 手动触发：在仓库的 Actions 标签页点 "Run workflow" 按钮，
+  # 可以在弹出的表单里临时改包名 / 编译变体，不用每次都改 yml
   workflow_dispatch:
     inputs:
       package_name:
-        description: 'Target application ID (e.g., com.android.packageinstaller)'
+        description: '目标包名 (applicationId)'
         required: true
         default: 'com.android.packageinstaller'
-  push:
-    branches: [ main, master ]
+      build_variant:
+        description: '编译任务名 (gradlew assemble 后面的部分，如 PreviewDebug / StableRelease)'
+        required: true
+        default: 'PreviewDebug'
+
+  # 如果想改成"push 到某分支就自动编译"，取消下面注释即可
+  # push:
+  #   branches: [ main ]
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: read
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up JDK 25
+      - name: Set up JDK
         uses: actions/setup-java@v4
         with:
-          distribution: 'zulu'
-          java-version: '25'
+          distribution: 'temurin'
+          # 如果这里报 "invalid source release" 之类的版本错误，
+          # 去仓库的 .github/workflows/pr-check.yml 或 README 里确认官方 CI 用的 JDK 版本，改成一致的
+          java-version: '21'
+          cache: 'gradle'
 
-      - name: Setup Android SDK
+      - name: Set up Android SDK
         uses: android-actions/setup-android@v3
-        with:
-          packages: 'platforms;android-36 build-tools;36.0.0'
 
       - name: Grant execute permission for gradlew
-        run: chmod +x ./gradlew
+        run: chmod +x gradlew
 
-      - name: Modify applicationId
+      - name: Build APK with custom package name
         run: |
-          TARGET_PACKAGE="${{ github.event.inputs.package_name || 'com.android.packageinstaller' }}"
-          echo "Setting applicationId to: $TARGET_PACKAGE"
+          ./gradlew "assemble${{ inputs.build_variant }}" \
+            -PAPP_ID="${{ inputs.package_name }}" \
+            -Pgpr.user="${{ secrets.GPR_USER }}" \
+            -Pgpr.key="${{ secrets.GPR_KEY }}" \
+            --stacktrace
+        # 说明：
+        # - APP_ID 就是上面确认过的、控制 applicationId 的 Gradle 属性
+        # - gpr.user / gpr.key 是给可能存在的 GitHub Packages 依赖用的凭证，
+        #   如果编译时没有报 401 / 找不到依赖 的错误，这两个参数留空也无所谓；
+        #   如果报错了，去仓库 Settings → Secrets and variables → Actions
+        #   新建 GPR_USER（你的 GitHub 用户名）和 GPR_KEY（一个有 read:packages
+        #   权限的 Personal Access Token）这两个 secret 即可。
 
-          # 处理 Kotlin DSL (build.gradle.kts)
-          if [ -f app/build.gradle.kts ]; then
-            sed -i "s/applicationId = \".*\"/applicationId = \"$TARGET_PACKAGE\"/" app/build.gradle.kts
-            echo "Modified app/build.gradle.kts"
+      - name: Locate built APK
+        id: find_apk
+        run: |
+          APK_PATH=$(find app/build/outputs/apk -name "*.apk" | head -n 1)
+          if [ -z "$APK_PATH" ]; then
+            echo "没找到生成的 APK，检查上一步的编译日志"
+            exit 1
           fi
+          echo "找到 APK: $APK_PATH"
+          echo "apk_path=$APK_PATH" >> "$GITHUB_OUTPUT"
 
-          # 处理 Groovy DSL (build.gradle)
-          if [ -f app/build.gradle ]; then
-            sed -i "s/applicationId \".*\"/applicationId \"$TARGET_PACKAGE\"/" app/build.gradle
-            echo "Modified app/build.gradle"
-          fi
-
-          # 验证修改结果
-          echo "--- applicationId 当前值 ---"
-          grep -r "applicationId" app/build.gradle* || true
-
-      - name: Build Debug APK
-        env:
-          GITHUB_ACTOR: ${{ github.actor }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: ./gradlew assembleUnstableDebug --no-daemon
-
-      - name: Upload APK
+      - name: Upload APK as artifact
         uses: actions/upload-artifact@v4
         with:
-          name: InstallerX-APK
-          path: app/build/outputs/apk/**/*.apk
-          if-no-files-found: error
+          name: InstallerX-${{ inputs.package_name }}
+          path: ${{ steps.find_apk.outputs.apk_path }}
+          retention-days: 14

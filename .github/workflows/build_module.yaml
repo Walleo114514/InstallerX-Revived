@@ -1,0 +1,70 @@
+name: Build InstallerX with Custom Package Name
+
+on:
+  workflow_dispatch:
+    inputs:
+      package_name:
+        description: 'Target application ID (e.g., com.android.packageinstaller)'
+        required: true
+        default: 'com.android.packageinstaller'
+  push:
+    branches: [ main, master ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 25
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '25'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platforms;android-36 build-tools;36.0.0'
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x ./gradlew
+
+      - name: Modify applicationId
+        run: |
+          TARGET_PACKAGE="${{ github.event.inputs.package_name || 'com.android.packageinstaller' }}"
+          echo "Setting applicationId to: $TARGET_PACKAGE"
+
+          # 处理 Kotlin DSL (build.gradle.kts)
+          if [ -f app/build.gradle.kts ]; then
+            sed -i "s/applicationId = \".*\"/applicationId = \"$TARGET_PACKAGE\"/" app/build.gradle.kts
+            echo "Modified app/build.gradle.kts"
+          fi
+
+          # 处理 Groovy DSL (build.gradle)
+          if [ -f app/build.gradle ]; then
+            sed -i "s/applicationId \".*\"/applicationId \"$TARGET_PACKAGE\"/" app/build.gradle
+            echo "Modified app/build.gradle"
+          fi
+
+          # 验证修改结果
+          echo "--- applicationId 当前值 ---"
+          grep -r "applicationId" app/build.gradle* || true
+
+      - name: Build Debug APK
+        env:
+          GITHUB_ACTOR: ${{ github.actor }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./gradlew assembleUnstableDebug --no-daemon
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: InstallerX-APK
+          path: app/build/outputs/apk/**/*.apk
+          if-no-files-found: error

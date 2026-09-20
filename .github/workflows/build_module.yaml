@@ -35,8 +35,9 @@ jobs:
           java-version: '21'
           cache: 'gradle'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+      # ubuntu-latest 镜像自带已配置好的 Android SDK (platform-tools/build-tools 都有，
+      # license 也已预先接受)，不需要额外的 setup-android 步骤 ——
+      # android-actions/setup-android@v3 默认会尝试装一个早已下架的 "tools" 包，反而会报错
 
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew

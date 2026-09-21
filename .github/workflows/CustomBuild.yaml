@@ -13,6 +13,10 @@ on:
         description: '编译任务名 (gradlew assemble 后面的部分，如 PreviewDebug / StableRelease)'
         required: true
         default: 'PreviewDebug'
+      version_code:
+        description: '目标 versionCode，必须明显高于你手机上原安装器的 version-long (你贴的是 16000003)'
+        required: true
+        default: '20000000'
 
   # 如果想改成"push 到某分支就自动编译"，取消下面注释即可
   # push:
@@ -42,15 +46,24 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
-      - name: Build APK with custom package name
+      - name: Build APK with custom package name and versionCode
         run: |
           ./gradlew "assemble${{ inputs.build_variant }}" \
             -PAPP_ID="${{ inputs.package_name }}" \
+            -PVERSION_CODE="${{ inputs.version_code }}" \
             -Pgpr.user="${{ secrets.GPR_USER }}" \
             -Pgpr.key="${{ secrets.GPR_KEY }}" \
             --stacktrace
         # 说明：
         # - APP_ID 就是上面确认过的、控制 applicationId 的 Gradle 属性
+        # - VERSION_CODE 是新加的：仓库官方文档只确认了 VERSION_NAME 有类似的
+        #   Gradle 属性覆盖机制，没有确认 VERSION_CODE 也有 —— 如果 app/build.gradle.kts
+        #   里没人读取这个属性，Gradle 不会报错，只会静默忽略，编译出来的
+        #   versionCode 还是原来的值！构建完一定要看下一步 "Verify built APK" 的输出，
+        #   确认 versionCode 真的变了，不要只看编译成功就假设生效了。
+        #   如果没生效，需要在 app/build.gradle.kts 的 defaultConfig 里，把原来的
+        #   `versionCode = <原表达式>` 改成：
+        #   versionCode = (project.findProperty("VERSION_CODE") as String?)?.toIntOrNull() ?: (<原表达式>)
         # - gpr.user / gpr.key 是给可能存在的 GitHub Packages 依赖用的凭证，
         #   如果编译时没有报 401 / 找不到依赖 的错误，这两个参数留空也无所谓；
         #   如果报错了，去仓库 Settings → Secrets and variables → Actions
@@ -67,6 +80,18 @@ jobs:
           fi
           echo "找到 APK: $APK_PATH"
           echo "apk_path=$APK_PATH" >> "$GITHUB_OUTPUT"
+
+      - name: Verify built APK's package name and versionCode
+        run: |
+          AAPT=$(find "$ANDROID_HOME" -type f -name "aapt" 2>/dev/null | sort -V | tail -n 1)
+          if [ -z "$AAPT" ]; then
+            echo "没找到 aapt，跳过校验（不影响 APK 本身，只是没法在这里自动核对）"
+          else
+            echo "==== APK 实际信息 ===="
+            "$AAPT" dump badging "${{ steps.find_apk.outputs.apk_path }}" | grep -E "^package:|versionCode"
+            echo "======================"
+            echo "上面 package= 和 versionCode= 必须分别等于你填的 ${{ inputs.package_name }} 和 ${{ inputs.version_code }}"
+          fi
 
       - name: Upload APK as artifact
         uses: actions/upload-artifact@v4

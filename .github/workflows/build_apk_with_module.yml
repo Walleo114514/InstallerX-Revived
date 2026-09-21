@@ -1,4 +1,4 @@
-name: APK And Module
+name: Build with custom package name
 
 on:
   # 手动触发：在仓库的 Actions 标签页点 "Run workflow" 按钮，
@@ -17,6 +17,14 @@ on:
         description: '目标 versionCode，必须明显高于你手机上原安装器的 version-long (你贴的是 16000003)'
         required: true
         default: '20000000'
+      install_partition_path:
+        description: '原安装器所在分区路径 (不带结尾斜杠)，比如 /system/priv-app 或 /system_ext/priv-app'
+        required: true
+        default: '/system/priv-app'
+      install_dir_name:
+        description: '原安装器所在的文件夹名，同时也是 apk 文件名 (不含 .apk)，按你机器实际情况填'
+        required: true
+        default: 'BPackageInstaller'
 
   # 如果想改成"push 到某分支就自动编译"，取消下面注释即可
   # push:
@@ -98,4 +106,47 @@ jobs:
         with:
           name: InstallerX-${{ inputs.package_name }}
           path: ${{ steps.find_apk.outputs.apk_path }}
+          retention-days: 14
+
+      - name: Package as Magisk/KernelSU module
+        env:
+          PART_PATH: ${{ inputs.install_partition_path }}
+          DIR_NAME: ${{ inputs.install_dir_name }}
+        run: |
+          MODULE_DIR="$GITHUB_WORKSPACE/module_build"
+          TARGET_DIR="${MODULE_DIR}${PART_PATH}/${DIR_NAME}"
+          mkdir -p "$TARGET_DIR"
+          cp "${{ steps.find_apk.outputs.apk_path }}" "$TARGET_DIR/${DIR_NAME}.apk"
+
+          MODULE_ID=$(echo "installerx_${DIR_NAME}" | tr '[:upper:]' '[:lower:]')
+
+          {
+          echo "id=${MODULE_ID}"
+          echo "name=InstallerX as ${DIR_NAME}"
+          echo "version=v1.0"
+          echo "versionCode=1"
+          echo "author=you"
+          echo "description=Replace ${PART_PATH}/${DIR_NAME} with InstallerX (${{ inputs.package_name }})"
+          } > "$MODULE_DIR/module.prop"
+
+          echo 'set_perm_recursive $MODPATH 0 0 0755 0644' > "$MODULE_DIR/customize.sh"
+
+          cd "$MODULE_DIR" && zip -r "$GITHUB_WORKSPACE/InstallerX-Module.zip" .
+          echo "==== 模块内容 ===="
+          find "$MODULE_DIR" -type f
+          echo "=================="
+        # 说明：
+        # - 这里生成的目录结构是 <分区路径>/<文件夹名>/<文件夹名>.apk，
+        #   完全照抄你贴的 /system/priv-app/BPackageInstaller/BPackageInstaller.apk。
+        #   如果换设备，改上面 workflow_dispatch 里 install_partition_path /
+        #   install_dir_name 这两个输入就行，不用改这段脚本。
+        # - customize.sh 只做了权限：目录 0755、文件 0644，这是最基本、最通用的写法。
+        # - 强烈建议刷入前用 `adb shell pm path com.android.packageinstaller`
+        #   (或对应包名) 再核对一遍路径和文件名，一个字都不能错。
+
+      - name: Upload module as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: InstallerX-Module-${{ inputs.install_dir_name }}
+          path: InstallerX-Module.zip
           retention-days: 14
